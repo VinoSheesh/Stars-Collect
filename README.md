@@ -1,7 +1,6 @@
-![image](https://github.com/user-attachments/assets/9f4aa588-119d-4b59-97a6-87cdfea5f497)# CoinHunter
+## ⭐ Star Collector
 
-## 📖 Pengantar
-**CoinHunter** adalah game platformer 2D berbasis Phaser. Kamu akan mengendalikan karakter untuk mengumpulkan koin sebanyak mungkin hingga level 5. Namun, waspada! Musuh muncul di tengah-tengah permainan, siap menggagalkan kemenanganmu!
+**Star Collector** adalah game platformer 2D berbasis Phaser. Kamu akan mengendalikan karakter untuk mengumpulkan Bintang sebanyak mungkin hingga level 5. Namun, waspada! Musuh muncul di tengah-tengah permainan, siap menggagalkan kemenanganmu!
 
 ## 🎮 Cara Kontrol
 - **Arrow Kiri (←)**: Bergerak ke kiri.
