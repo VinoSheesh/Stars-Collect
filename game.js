@@ -1,952 +1,1573 @@
-// Import Phaser
+// Global Game State
+const gameState = {
+  level: 5,
+  lives: 3,
+  score: 0,
+  totalStars: 0,
+  starsCollected: 0,
+  maxLevel: 5,
+  audioEnabled: true,
+  volume: 0.7,
+  backgroundMusic: null,
+  sounds: {},
+}
+
+// Declare Phaser variable
 const Phaser = window.Phaser
 
-var scenePlay = new Phaser.Class({
-  Extends: Phaser.Scene,
+// Audio Manager Class - Fixed to prevent double playing
+class AudioManager {
+  constructor(scene) {
+    this.scene = scene
+    this.sounds = {}
+    this.backgroundMusic = null
+    this.walkingSound = null
+    this.isWalking = false
+    this.musicStarted = false
+  }
 
-  initialize: function () {
-    Phaser.Scene.call(this, { key: "scenePlay" })
-    this.gameStarted = false
-    this.currentLevel = 1
-    this.gameFinished = false
-    this.checkpointReached = false
+  preloadSounds() {
+    // Create placeholder audio using Web Audio API
+    this.createPlaceholderAudio()
+  }
 
-    // PERBAIKAN: Posisi checkpoint yang lebih terlihat untuk semua level
-    this.checkpoints = {
-      1: { x: 750, y: 100 },
-      2: { x: 650, y: 200 }, // Diperbaiki ke platform paling kanan atas
-      3: { x: 750, y: 70 },
-      4: { x: 700, y: 70 },
-      5: { x: 750, y: 130 },
-      6: { x: 200, y: 30 },
-      7: { x: 750, y: 30 },
-      8: { x: 400, y: 30 },
-      9: { x: 400, y: 70 },
-      10: { x: 500, y: 20 },
+  createPlaceholderAudio() {
+    // Create audio context for sound generation
+    this.audioContext = new (window.AudioContext || window.webkitAudioContext)()
+  }
+
+  createSounds() {
+    // Create sound objects with placeholder sounds
+    this.sounds.walking = { play: () => this.playTone(200, 0.1), stop: () => {}, setVolume: () => {} }
+    this.sounds.jump = { play: () => this.playTone(400, 0.2), setVolume: () => {} }
+    this.sounds.collect = { play: () => this.playTone(800, 0.3), setVolume: () => {} }
+    this.sounds.levelChange = { play: () => this.playMelody([523, 659, 784], 0.5), setVolume: () => {} }
+    this.sounds.gameOver = { play: () => this.playMelody([400, 300, 200], 0.8), setVolume: () => {} }
+    this.sounds.touch = { play: () => this.playTone(600, 0.1), setVolume: () => {} }
+
+    // Background music placeholder
+    this.backgroundMusic = {
+      play: () => {
+        if (!this.musicStarted && gameState.audioEnabled) {
+          this.playBackgroundLoop()
+          this.musicStarted = true
+        }
+      },
+      stop: () => {
+        this.musicStarted = false
+        if (this.bgMusicInterval) {
+          clearInterval(this.bgMusicInterval)
+        }
+      },
+      setVolume: () => {},
     }
-  },
+  }
 
-  preload: function () {
-    this.load.setBaseURL("assets/")
-    this.load.image("background", "images/BG.png")
-    this.load.image("btn_play", "images/ButtonPlay.png")
-    this.load.image("gameover", "images/GameOver.png")
-    this.load.image("stars", "star.png")
-    this.load.image("ground", "images/Tile50.png")
+  playTone(frequency, duration) {
+    if (!gameState.audioEnabled || !this.audioContext) return
 
-    // PERBAIKAN: Load checkpoint image dengan fallback
-    this.load.image("checkpoint", "images/checkpoint.png")
+    const oscillator = this.audioContext.createOscillator()
+    const gainNode = this.audioContext.createGain()
 
-    // FALLBACK: Jika gambar tidak ada, buat placeholder
-    this.load.on("loaderror", (file) => {
-      if (file.key === "checkpoint") {
-        console.log("Checkpoint image not found, creating placeholder")
-        this.createCheckpointPlaceholder()
+    oscillator.connect(gainNode)
+    gainNode.connect(this.audioContext.destination)
+
+    oscillator.frequency.setValueAtTime(frequency, this.audioContext.currentTime)
+    oscillator.type = "square"
+
+    gainNode.gain.setValueAtTime(gameState.volume * 0.1, this.audioContext.currentTime)
+    gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + duration)
+
+    oscillator.start(this.audioContext.currentTime)
+    oscillator.stop(this.audioContext.currentTime + duration)
+  }
+
+  playMelody(frequencies, duration) {
+    if (!gameState.audioEnabled) return
+
+    frequencies.forEach((freq, index) => {
+      setTimeout(
+        () => {
+          this.playTone(freq, duration / frequencies.length)
+        },
+        (index * (duration * 1000)) / frequencies.length,
+      )
+    })
+  }
+
+  playBackgroundLoop() {
+    if (!gameState.audioEnabled) return
+
+    const melody = [523, 659, 784, 659, 523, 440, 523]
+    let noteIndex = 0
+
+    this.bgMusicInterval = setInterval(() => {
+      if (gameState.audioEnabled && this.musicStarted) {
+        this.playTone(melody[noteIndex], 0.5)
+        noteIndex = (noteIndex + 1) % melody.length
       }
-    })
+    }, 600)
+  }
 
-    // Audio files
-    this.load.audio("snd_coin", "audio/koin.mp3")
-    this.load.audio("snd_lose", "audio/kalah.mp3")
-    this.load.audio("snd_jump", "audio/lompat.mp3")
-    this.load.audio("snd_leveling", "audio/ganti_level.mp3")
-    this.load.audio("snd_walk", "audio/jalan.mp3")
-    this.load.audio("snd_touch", "audio/touch.mp3")
-    this.load.audio("music_play", "audio/music_play.mp3")
+  playSound(soundName) {
+    if (!gameState.audioEnabled || !this.sounds[soundName]) return
 
-    // Character spritesheet
-    this.load.spritesheet("char", "CharaSpriteAnim.png", {
-      frameWidth: 44.8,
-      frameHeight: 93,
-    })
-  },
+    if (soundName === "walking") {
+      if (!this.isWalking) {
+        this.sounds.walking.play()
+        this.isWalking = true
+      }
+    } else {
+      this.sounds[soundName].play()
+    }
+  }
 
-  // TAMBAHAN: Buat placeholder checkpoint jika gambar tidak ada
-  createCheckpointPlaceholder: function () {
-    const graphics = this.add.graphics()
-    graphics.fillStyle(0x00ff00)
-    graphics.fillRect(0, 0, 32, 48)
-    graphics.fillStyle(0xffffff)
-    graphics.fillRect(4, 4, 24, 40)
-    graphics.fillStyle(0x000000)
-    graphics.fillRect(8, 8, 16, 32)
-    this.textures.generate("checkpoint", { data: ["0"], pixelWidth: 32, pixelHeight: 48 })
-    graphics.destroy()
-  },
+  stopSound(soundName) {
+    if (!this.sounds[soundName]) return
 
-  create: function () {
-    // Initialize game state
-    this.gameStarted = false
-    this.gameFinished = false
-    this.checkpointReached = false
-    this.starsCollected = 0
-    this.totalStars = 0
+    if (soundName === "walking") {
+      this.sounds.walking.stop()
+      this.isWalking = false
+    } else {
+      this.sounds[soundName].stop()
+    }
+  }
 
-    // PERBAIKAN: Buat placeholder checkpoint jika belum ada
-    if (!this.textures.exists("checkpoint")) {
-      this.createCheckpointPlaceholder()
+  playBackgroundMusic() {
+    if (gameState.audioEnabled && this.backgroundMusic && !this.musicStarted) {
+      this.backgroundMusic.play()
+    }
+  }
+
+  stopBackgroundMusic() {
+    if (this.backgroundMusic) {
+      this.backgroundMusic.stop()
+    }
+  }
+
+  updateVolume() {
+    // Volume is handled in playTone method
+  }
+}
+
+// Menu Scene
+class MenuScene extends Phaser.Scene {
+  constructor() {
+    super({ key: "MenuScene" })
+  }
+
+  preload() {
+    this.audioManager = new AudioManager(this)
+    this.audioManager.preloadSounds()
+    this.createGameAssets()
+  }
+
+  createGameAssets() {
+    // Enhanced Player sprite - Modern robot character
+    const playerGraphics = this.add.graphics()
+
+    // Body with metallic gradient
+    playerGraphics.fillGradientStyle(0x4a90e2, 0x4a90e2, 0x2c5aa0, 0x2c5aa0)
+    playerGraphics.fillRoundedRect(6, 10, 20, 28, 4)
+
+    // Head with visor
+    playerGraphics.fillGradientStyle(0x5ba0f2, 0x5ba0f2, 0x4a90e2, 0x4a90e2)
+    playerGraphics.fillRoundedRect(8, 4, 16, 16, 6)
+
+    // Visor
+    playerGraphics.fillStyle(0x00d4ff, 0.8)
+    playerGraphics.fillRoundedRect(10, 8, 12, 8, 3)
+
+    // Visor reflection
+    playerGraphics.fillStyle(0xffffff, 0.6)
+    playerGraphics.fillRoundedRect(11, 9, 4, 3, 1)
+
+    // Chest panel
+    playerGraphics.fillStyle(0x357abd)
+    playerGraphics.fillRoundedRect(10, 18, 12, 12, 2)
+
+    // Power core
+    playerGraphics.fillStyle(0x00ff88)
+    playerGraphics.fillCircle(16, 24, 3)
+    playerGraphics.fillStyle(0xffffff, 0.7)
+    playerGraphics.fillCircle(16, 23, 1)
+
+    // Arms
+    playerGraphics.fillStyle(0x4a90e2)
+    playerGraphics.fillRoundedRect(2, 14, 5, 16, 2)
+    playerGraphics.fillRoundedRect(25, 14, 5, 16, 2)
+
+    // Legs
+    playerGraphics.fillRoundedRect(9, 38, 5, 10, 2)
+    playerGraphics.fillRoundedRect(18, 38, 5, 10, 2)
+
+    // Feet
+    playerGraphics.fillStyle(0x2c5aa0)
+    playerGraphics.fillRoundedRect(8, 46, 7, 4, 2)
+    playerGraphics.fillRoundedRect(17, 46, 7, 4, 2)
+
+    playerGraphics.generateTexture("player", 32, 50)
+    playerGraphics.destroy()
+
+    // Enhanced Star sprite with animated glow
+    const starGraphics = this.add.graphics()
+
+    // Outer glow layers
+    for (let i = 3; i >= 1; i--) {
+      starGraphics.fillStyle(0xffd700, 0.2 * i)
+      this.drawStar(starGraphics, 16, 16, 12 + i * 2, 6 + i)
     }
 
-    // Setup sounds
-    this.snd_coin = this.sound.add("snd_coin")
-    this.snd_jump = this.sound.add("snd_jump")
-    this.snd_leveling = this.sound.add("snd_leveling")
-    this.snd_lose = this.sound.add("snd_lose")
-    this.snd_touch = this.sound.add("snd_touch")
-    this.snd_walk = this.sound.add("snd_walk", { loop: true, volume: 0 })
-    this.snd_walk.play()
+    // Main star body
+    starGraphics.fillGradientStyle(0xffd700, 0xffd700, 0xff8c00, 0xff8c00)
+    this.drawStar(starGraphics, 16, 16, 12, 6)
 
-    this.music_play = this.sound.add("music_play", { loop: true })
+    // Inner highlight
+    starGraphics.fillStyle(0xffffff, 0.8)
+    this.drawStar(starGraphics, 16, 16, 6, 3)
 
-    // Game dimensions
-    this.gameWidth = 800
-    this.gameHeight = 600
+    // Center sparkle
+    starGraphics.fillStyle(0xffffff)
+    starGraphics.fillCircle(16, 16, 2)
 
-    // Add background
-    this.add.image(this.gameWidth / 2, this.gameHeight / 2, "background")
+    starGraphics.generateTexture("star", 32, 32)
+    starGraphics.destroy()
 
-    // Create UI
-    this.createUI()
+    // Enhanced Platform sprite - Futuristic crystal platform
+    const platformGraphics = this.add.graphics()
+
+    // Platform shadow
+    platformGraphics.fillStyle(0x000000, 0.2)
+    platformGraphics.fillEllipse(50, 38, 95, 12)
+
+    // Main platform with gradient
+    platformGraphics.fillGradientStyle(0x8a2be2, 0x8a2be2, 0x4b0082, 0x4b0082)
+    platformGraphics.fillRoundedRect(5, 10, 90, 18, 8)
+
+    // Crystal facets
+    platformGraphics.fillStyle(0x9932cc, 0.8)
+    for (let i = 0; i < 4; i++) {
+      const x = 15 + i * 20
+      platformGraphics.fillTriangle(x, 10, x + 10, 5, x + 20, 10)
+    }
+
+    // Energy lines
+    platformGraphics.lineStyle(2, 0x00ffff, 0.8)
+    platformGraphics.lineBetween(10, 19, 90, 19)
+    platformGraphics.lineStyle(1, 0x00ffff, 0.6)
+    platformGraphics.lineBetween(15, 15, 85, 15)
+
+    // Glow effect
+    platformGraphics.fillStyle(0x00ffff, 0.3)
+    platformGraphics.fillEllipse(50, 32, 85, 8)
+
+    platformGraphics.generateTexture("platform", 100, 40)
+    platformGraphics.destroy()
+
+    // Enhanced Enemy sprite - Aggressive spiky creature
+    const enemyGraphics = this.add.graphics()
+
+    // Shadow
+    enemyGraphics.fillStyle(0x000000, 0.3)
+    platformGraphics.fillEllipse(16, 30, 28, 6)
+
+    // Main body with gradient
+    enemyGraphics.fillGradientStyle(0xff4500, 0xff4500, 0x8b0000, 0x8b0000)
+    enemyGraphics.fillRoundedRect(4, 6, 24, 20, 4)
+
+    // Spikes on top and sides
+    for (let i = 6; i < 26; i += 4) {
+      enemyGraphics.fillStyle(0xdc143c)
+      enemyGraphics.fillTriangle(i, 6, i + 2, 0, i + 4, 6)
+    }
+
+    // Side spikes
+    enemyGraphics.fillTriangle(4, 10, 0, 12, 4, 14)
+    enemyGraphics.fillTriangle(28, 10, 32, 12, 28, 14)
+
+    // Eyes with glow
+    enemyGraphics.fillStyle(0xff0000)
+    enemyGraphics.fillCircle(12, 12, 3)
+    enemyGraphics.fillCircle(20, 12, 3)
+
+    // Eye glow
+    enemyGraphics.fillStyle(0xff6666, 0.6)
+    enemyGraphics.fillCircle(12, 12, 4)
+    enemyGraphics.fillCircle(20, 12, 4)
+
+    // Pupils
+    enemyGraphics.fillStyle(0x000000)
+    enemyGraphics.fillCircle(12, 13, 1)
+    enemyGraphics.fillCircle(20, 13, 1)
+
+    // Mouth
+    enemyGraphics.fillStyle(0x000000)
+    enemyGraphics.fillTriangle(14, 18, 18, 18, 16, 22)
+
+    // Sharp teeth
+    enemyGraphics.fillStyle(0xffffff)
+    enemyGraphics.fillTriangle(14, 18, 15, 20, 16, 18)
+    enemyGraphics.fillTriangle(16, 18, 17, 20, 18, 18)
+
+    enemyGraphics.generateTexture("enemy", 32, 32)
+    enemyGraphics.destroy()
+
+    // Enhanced Heart sprite
+    const heartGraphics = this.add.graphics()
+
+    // Heart glow
+    heartGraphics.fillStyle(0xff69b4, 0.4)
+    this.drawHeart(heartGraphics, 12, 12, 10)
+
+    // Main heart
+    heartGraphics.fillGradientStyle(0xff1493, 0xff1493, 0xdc143c, 0xdc143c)
+    this.drawHeart(heartGraphics, 12, 12, 8)
+
+    // Heart highlight
+    heartGraphics.fillStyle(0xffffff, 0.7)
+    heartGraphics.fillEllipse(10, 10, 6, 4)
+
+    heartGraphics.generateTexture("heart", 24, 24)
+    heartGraphics.destroy()
+
+    // Enhanced Ground texture
+    const bgGraphics = this.add.graphics()
+
+    // Grass layer with texture
+    bgGraphics.fillGradientStyle(0x32cd32, 0x32cd32, 0x228b22, 0x228b22)
+    bgGraphics.fillRect(0, 0, 1000, 25)
+
+    // Dirt layer
+    bgGraphics.fillGradientStyle(0x8b4513, 0x8b4513, 0x654321, 0x654321)
+    bgGraphics.fillRect(0, 25, 1000, 35)
+
+    // Rock layer
+    bgGraphics.fillGradientStyle(0x696969, 0x696969, 0x2f4f4f, 0x2f4f4f)
+    bgGraphics.fillRect(0, 60, 1000, 40)
+
+    // Grass details
+    for (let i = 5; i < 1000; i += 8) {
+      const height = Phaser.Math.Between(5, 12)
+      bgGraphics.fillStyle(0x90ee90)
+      bgGraphics.fillTriangle(i, 0, i + 2, -height, i + 4, 0)
+    }
+
+    // Small rocks and details
+    for (let i = 20; i < 1000; i += 30) {
+      bgGraphics.fillStyle(0x8b7355)
+      bgGraphics.fillCircle(i, 45, Phaser.Math.Between(2, 4))
+    }
+
+    bgGraphics.generateTexture("ground", 1000, 100)
+    bgGraphics.destroy()
+  }
+
+  drawStar(graphics, x, y, outerRadius, innerRadius) {
+    const points = 5
+    graphics.beginPath()
+    for (let i = 0; i < points * 2; i++) {
+      const angle = (i * Math.PI) / points
+      const radius = i % 2 === 0 ? outerRadius : innerRadius
+      const px = x + Math.cos(angle - Math.PI / 2) * radius
+      const py = y + Math.sin(angle - Math.PI / 2) * radius
+
+      if (i === 0) {
+        graphics.moveTo(px, py)
+      } else {
+        graphics.lineTo(px, py)
+      }
+    }
+    graphics.closePath()
+    graphics.fillPath()
+  }
+
+  drawHeart(graphics, x, y, size) {
+    graphics.beginPath()
+    graphics.arc(x - size / 3, y - size / 3, size / 3, Math.PI, 0, false)
+    graphics.arc(x + size / 3, y - size / 3, size / 3, Math.PI, 0, false)
+    graphics.lineTo(x, y + size / 2)
+    graphics.closePath()
+    graphics.fillPath()
+  }
+
+  create() {
+    this.audioManager.createSounds()
+
+    // Enhanced background with animated elements
+    const bg = this.add.graphics()
+    bg.fillGradientStyle(0x87ceeb, 0x87ceeb, 0x4682b4, 0x4682b4)
+    bg.fillRect(0, 0, 1000, 700)
+
+    // Animated clouds with better design
+    for (let i = 0; i < 6; i++) {
+      const cloud = this.add.graphics()
+      cloud.fillStyle(0xffffff, 0.8 + i * 0.03)
+
+      // More detailed cloud shape
+      cloud.fillCircle(0, 0, 20)
+      cloud.fillCircle(18, -8, 25)
+      cloud.fillCircle(35, -5, 22)
+      cloud.fillCircle(50, 0, 18)
+      cloud.fillCircle(15, 8, 16)
+      cloud.fillCircle(30, 10, 18)
+      cloud.fillCircle(42, 8, 15)
+
+      cloud.x = Phaser.Math.Between(50, 950)
+      cloud.y = Phaser.Math.Between(50, 250)
+
+      // Floating animation
+      this.tweens.add({
+        targets: cloud,
+        y: cloud.y - 8,
+        x: cloud.x + 20,
+        duration: Phaser.Math.Between(8000, 12000),
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      })
+    }
+
+    // Title with enhanced styling
+    const title = this.add.text(500, 150, "⭐ STAR COLLECTOR ⭐", {
+      fontSize: "52px",
+      fontFamily: "Arial Black",
+      fill: "#FFD700",
+      stroke: "#FF6347",
+      strokeThickness: 5,
+      shadow: {
+        offsetX: 4,
+        offsetY: 4,
+        color: "#000000",
+        blur: 10,
+        fill: true,
+      },
+    })
+    title.setOrigin(0.5)
+
+    // Subtitle
+    const subtitle = this.add.text(500, 220, "Collect all stars and avoid the spiky enemies!", {
+      fontSize: "26px",
+      fontFamily: "Arial",
+      fill: "#FFFFFF",
+      stroke: "#000000",
+      strokeThickness: 3,
+    })
+    subtitle.setOrigin(0.5)
+
+    // Game info with better formatting
+    const info = this.add.text(
+      500,
+      300,
+      "• 5 Challenging Levels\n• 3 Lives per Game\n• Avoid Spiky Monsters\n• Don't Fall Off Platforms!\n• Collect All Stars to Win",
+      {
+        fontSize: "22px",
+        fontFamily: "Arial",
+        fill: "#FFFFFF",
+        align: "center",
+        lineSpacing: 12,
+        stroke: "#000000",
+        strokeThickness: 2,
+      },
+    )
+    info.setOrigin(0.5)
+
+    // Enhanced start button
+    const startButton = this.add.rectangle(500, 450, 220, 70, 0x32cd32)
+    startButton.setStrokeStyle(5, 0xffffff)
+    startButton.setInteractive({ useHandCursor: true })
+
+    const startText = this.add.text(500, 450, "START GAME", {
+      fontSize: "28px",
+      fontFamily: "Arial Black",
+      fill: "#FFFFFF",
+    })
+    startText.setOrigin(0.5)
+
+    // Button animations
+    startButton.on("pointerover", () => {
+      startButton.setFillStyle(0x228b22)
+      startButton.setScale(1.05)
+      this.audioManager.playSound("touch")
+    })
+
+    startButton.on("pointerout", () => {
+      startButton.setFillStyle(0x32cd32)
+      startButton.setScale(1)
+    })
+
+    startButton.on("pointerdown", () => {
+      this.audioManager.playSound("touch")
+      this.cameras.main.fade(500, 0, 0, 0)
+      this.time.delayedCall(500, () => {
+        this.scene.start("GameScene")
+      })
+    })
+
+    // Instructions
+    const instructions = this.add.text(500, 550, "Use ARROW KEYS to move and jump • Don't fall off the platforms!", {
+      fontSize: "18px",
+      fontFamily: "Arial",
+      fill: "#FFFFFF",
+      alpha: 0.9,
+      align: "center",
+    })
+    instructions.setOrigin(0.5)
+
+    // Floating animation for title
+    this.tweens.add({
+      targets: title,
+      y: title.y - 8,
+      scaleX: 1.03,
+      scaleY: 1.03,
+      duration: 3000,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.easeInOut",
+    })
+
+    // Start background music
+    this.audioManager.playBackgroundMusic()
+  }
+}
+
+// Main Game Scene
+class GameScene extends Phaser.Scene {
+  constructor() {
+    super({ key: "GameScene" })
+  }
+
+  create() {
+    this.audioManager = new AudioManager(this)
+    this.audioManager.createSounds()
+    this.audioManager.playBackgroundMusic()
+
+    // Reset game state for new game
+    if (gameState.level === 1) {
+      gameState.lives = 3
+      gameState.score = 0
+    }
+
+    // Enhanced background
+    this.createMagicalBackground()
 
     // Create physics groups
     this.platforms = this.physics.add.staticGroup()
     this.stars = this.physics.add.group()
+    this.enemies = this.physics.add.group()
+
+    // Create level
+    this.createLevel()
 
     // Create player
     this.createPlayer()
 
-    // Create animations
-    this.createAnimations()
+    // Create UI
+    this.createUI()
 
-    // Setup input
+    // Setup controls
     this.cursors = this.input.keyboard.createCursorKeys()
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
-
-    // Create initial level
-    this.createLevel()
 
     // Setup collisions
     this.setupCollisions()
 
-    // Create start screen
-    this.createStartScreen()
+    // Camera effects
+    this.cameras.main.fadeIn(500)
 
-    // Initially pause physics
-    this.physics.pause()
+    // Level intro
+    this.showLevelIntro()
 
-    this.jumpCoyoteTime = 0
-    this.jumpCoyoteTimeMax = 6
-  },
+    // Death zone (bottom of screen) - Fixed to be more forgiving
+    this.deathZone = 650
+  }
 
-  createUI: function () {
-    // Level text
-    this.levelText = this.add.text(16, 16, "Level: 1", {
-      fontSize: "24px",
-      fill: "#000",
-    })
-    this.levelText.setDepth(10)
+  createMagicalBackground() {
+    // Gradient sky background
+    const bg = this.add.graphics()
+    bg.fillGradientStyle(0x87ceeb, 0x87ceeb, 0x4682b4, 0x4682b4)
+    bg.fillRect(0, 0, 1000, 600)
 
-    // Stars counter
-    this.starsText = this.add.text(16, 50, "Stars: 0/0", {
-      fontSize: "24px",
-      fill: "#000",
-    })
-    this.starsText.setDepth(10)
+    // Magical atmosphere with floating particles
+    for (let i = 0; i < 20; i++) {
+      const particle = this.add.circle(
+        Phaser.Math.Between(0, 1000),
+        Phaser.Math.Between(0, 600),
+        Phaser.Math.Between(1, 3),
+        0xffffff,
+        0.4,
+      )
 
-    // Checkpoint indicator
-    this.checkpointText = this.add.text(16, 84, "Checkpoint: Not Reached", {
-      fontSize: "18px",
-      fill: "#ff0000",
-    })
-    this.checkpointText.setDepth(10)
-  },
-
-  createPlayer: function () {
-    this.player = this.physics.add.sprite(100, 450, "char")
-    this.player.setBounce(0.2)
-    this.player.setCollideWorldBounds(true)
-
-    // PERBAIKAN: Sesuaikan collision box agar tidak terpentok
-    this.player.body.setSize(30, 80, true) // width, height, center
-    this.player.body.setOffset(7, 13) // offset x, y untuk centering
-  },
-
-  createAnimations: function () {
-    // Left animation
-    this.anims.create({
-      key: "left",
-      frames: this.anims.generateFrameNumbers("char", { start: 0, end: 3 }),
-      frameRate: 12,
-      repeat: -1,
-    })
-
-    // Right animation
-    this.anims.create({
-      key: "right",
-      frames: this.anims.generateFrameNumbers("char", { start: 5, end: 8 }),
-      frameRate: 12,
-      repeat: -1,
-    })
-
-    // Front/idle animation
-    this.anims.create({
-      key: "front",
-      frames: [{ key: "char", frame: 4 }],
-      frameRate: 20,
-    })
-
-    // Turn animation
-    this.anims.create({
-      key: "turn",
-      frames: [{ key: "char", frame: 4 }],
-      frameRate: 20,
-    })
-  },
-
-  createStartScreen: function () {
-    // Dark overlay
-    this.darkenLayer = this.add.rectangle(
-      this.gameWidth / 2,
-      this.gameHeight / 2,
-      this.gameWidth,
-      this.gameHeight,
-      0x000000,
-    )
-    this.darkenLayer.setDepth(10)
-    this.darkenLayer.alpha = 0.5
-
-    // Play button
-    this.buttonPlay = this.add.image(this.gameWidth / 2, this.gameHeight / 2, "btn_play")
-    this.buttonPlay.setDepth(10)
-    this.buttonPlay.setInteractive({ useHandCursor: true })
-    this.buttonPlay.setScale(0.8)
-
-    // Button interactions
-    this.buttonPlay.on("pointerdown", () => {
-      this.buttonPlay.setTint(0x5a5a5a)
-    })
-
-    this.buttonPlay.on("pointerup", () => {
-      this.buttonPlay.clearTint()
-      this.startGame()
-    })
-  },
-
-  startGame: function () {
-    this.snd_touch.play()
-    this.music_play.play()
-
-    // Animate button disappearing
-    this.tweens.add({
-      targets: this.buttonPlay,
-      ease: "Back.in",
-      scaleX: 0,
-      scaleY: 0,
-      duration: 250,
-    })
-
-    // Fade out overlay
-    this.tweens.add({
-      delay: 150,
-      targets: this.darkenLayer,
-      duration: 250,
-      alpha: 0,
-      onComplete: () => {
-        this.gameStarted = true
-        this.physics.resume()
-        this.darkenLayer.destroy()
-        this.buttonPlay.destroy()
-      },
-    })
-  },
-
-  createLevel: function () {
-    // PERBAIKAN: Clear existing elements dengan lebih thorough
-    this.platforms.clear(true, true)
-    this.stars.clear(true, true)
-
-    // Clear checkpoint elements
-    if (this.checkpointSprite) {
-      this.checkpointSprite.destroy()
-      this.checkpointSprite = null
-    }
-    if (this.checkpointIndicator) {
-      this.checkpointIndicator.destroy()
-      this.checkpointIndicator = null
+      this.tweens.add({
+        targets: particle,
+        y: particle.y - 150,
+        alpha: 0,
+        duration: Phaser.Math.Between(4000, 8000),
+        repeat: -1,
+        delay: Phaser.Math.Between(0, 4000),
+      })
     }
 
-    // Reset player position
-    this.player.setPosition(100, 450)
-    this.player.clearTint()
-    this.checkpointReached = false
-    this.starsCollected = 0
+    // Enhanced clouds
+    for (let i = 0; i < 5; i++) {
+      const cloud = this.add.graphics()
+      const alpha = 0.5 + i * 0.1
+      cloud.fillStyle(0xffffff, alpha)
 
-    // Update UI
-    this.levelText.setText("Level: " + this.currentLevel)
-    this.checkpointText.setText("Checkpoint: Not Reached")
-    this.checkpointText.setFill("#ff0000")
+      const scale = 0.7 + i * 0.15
+      cloud.fillCircle(0, 0, 18 * scale)
+      cloud.fillCircle(14 * scale, -4, 22 * scale)
+      cloud.fillCircle(28 * scale, -2, 18 * scale)
+      cloud.fillCircle(40 * scale, 0, 16 * scale)
+      cloud.fillCircle(10 * scale, 6, 14 * scale)
+      cloud.fillCircle(20 * scale, 7, 16 * scale)
+      cloud.fillCircle(32 * scale, 6, 14 * scale)
 
-    // Create level layout
-    this.createLevelLayout()
+      cloud.x = Phaser.Math.Between(100, 900)
+      cloud.y = Phaser.Math.Between(50, 200)
 
-    // Create checkpoint
-    this.createCheckpoint()
+      this.tweens.add({
+        targets: cloud,
+        x: cloud.x + 30 * (i + 1),
+        y: cloud.y - 5,
+        duration: Phaser.Math.Between(25000, 35000),
+        repeat: -1,
+        yoyo: true,
+        ease: "Sine.easeInOut",
+      })
+    }
 
-    // Update stars counter
-    this.totalStars = this.stars.children.size
-    this.starsText.setText("Stars: 0/" + this.totalStars)
+    // Enhanced magical ground
+    this.add.image(500, 650, "ground")
 
-    // PERBAIKAN: Setup collisions setelah semua objek dibuat
-    this.setupCollisions()
-  },
+    // Add mystical background elements
+    for (let i = 0; i < 10; i++) {
+      const crystal = this.add.graphics()
+      crystal.fillStyle(0x9370db, 0.3)
+      crystal.fillTriangle(0, 0, 8, -15, 16, 0)
+      crystal.fillStyle(0xba55d3, 0.5)
+      crystal.fillTriangle(2, 0, 8, -12, 14, 0)
+      crystal.x = Phaser.Math.Between(50, 950)
+      crystal.y = 620
 
-  createLevelLayout: function () {
-    const levelLayouts = {
+      this.tweens.add({
+        targets: crystal,
+        alpha: 0.7,
+        duration: 3000,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+        delay: i * 400,
+      })
+    }
+  }
+
+  createLevel() {
+    const levels = {
       1: {
         platforms: [
-          { x: 50, y: 568 },
-          { x: 150, y: 568 },
-          { x: 250, y: 568 },
-          { x: 350, y: 568 },
-          { x: 450, y: 568 },
-          { x: 550, y: 568 },
-          { x: 650, y: 568 },
-          { x: 750, y: 568 },
-          { x: 200, y: 450 },
-          { x: 400, y: 350 },
-          { x: 600, y: 250 },
-          { x: 750, y: 150 },
+          { x: 100, y: 600 },
+          { x: 300, y: 500 },
+          { x: 500, y: 400 },
+          { x: 700, y: 300 },
+          { x: 900, y: 200 },
         ],
         stars: [
-          { x: 100, y: 500 },
-          { x: 300, y: 500 },
-          { x: 200, y: 400 },
-          { x: 400, y: 300 },
-          { x: 600, y: 200 },
-          { x: 750, y: 100 },
+          { x: 100, y: 550 },
+          { x: 300, y: 450 },
+          { x: 500, y: 350 },
+          { x: 700, y: 250 },
+          { x: 900, y: 150 },
+        ],
+        enemies: [
+          { x: 400, y: 550, speed: 50, platformIndex: 0 },
+          { x: 600, y: 350, speed: 60, platformIndex: 2 },
         ],
       },
       2: {
         platforms: [
-          { x: 75, y: 568 },
-          { x: 175, y: 568 },
-          { x: 325, y: 568 },
-          { x: 425, y: 568 },
-          { x: 575, y: 568 },
-          { x: 675, y: 568 },
-          { x: 150, y: 450 },
-          { x: 300, y: 380 },
-          { x: 500, y: 320 },
-          { x: 650, y: 250 },
-          { x: 400, y: 180 },
+          { x: 100, y: 600 },
+          { x: 200, y: 500 },
+          { x: 400, y: 450 },
+          { x: 600, y: 350 },
+          { x: 800, y: 250 },
+          { x: 300, y: 300 },
+          { x: 500, y: 200 },
         ],
         stars: [
-          { x: 75, y: 500 },
-          { x: 325, y: 500 },
-          { x: 675, y: 500 },
-          { x: 150, y: 400 },
-          { x: 300, y: 330 },
-          { x: 500, y: 270 },
-          { x: 650, y: 200 },
-          { x: 400, y: 130 },
+          { x: 100, y: 550 },
+          { x: 200, y: 450 },
+          { x: 400, y: 400 },
+          { x: 600, y: 300 },
+          { x: 800, y: 200 },
+          { x: 300, y: 250 },
+          { x: 500, y: 150 },
+        ],
+        enemies: [
+          { x: 150, y: 550, speed: 40, platformIndex: 0 },
+          { x: 450, y: 400, speed: 50, platformIndex: 2 },
+          { x: 650, y: 300, speed: 55, platformIndex: 3 },
         ],
       },
       3: {
         platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 150, y: 480 },
-          { x: 250, y: 420 },
-          { x: 350, y: 360 },
-          { x: 450, y: 300 },
-          { x: 550, y: 240 },
-          { x: 650, y: 180 },
-          { x: 750, y: 120 },
-          { x: 600, y: 400 },
-          { x: 500, y: 480 },
+          { x: 100, y: 600 },
+          { x: 250, y: 550 },
+          { x: 400, y: 500 },
+          { x: 550, y: 400 },
+          { x: 700, y: 300 },
+          { x: 850, y: 200 },
+          { x: 300, y: 350 },
+          { x: 600, y: 250 },
         ],
         stars: [
-          { x: 100, y: 500 },
-          { x: 150, y: 430 },
-          { x: 250, y: 370 },
-          { x: 350, y: 310 },
-          { x: 450, y: 250 },
-          { x: 550, y: 190 },
-          { x: 650, y: 130 },
-          { x: 750, y: 70 },
-          { x: 600, y: 350 },
-          { x: 550, y: 430 },
+          { x: 100, y: 550 },
+          { x: 250, y: 500 },
+          { x: 400, y: 450 },
+          { x: 550, y: 350 },
+          { x: 700, y: 250 },
+          { x: 850, y: 150 },
+          { x: 300, y: 300 },
+          { x: 600, y: 200 },
+        ],
+        enemies: [
+          { x: 175, y: 550, speed: 45, platformIndex: 1 },
+          { x: 475, y: 450, speed: 55, platformIndex: 2 },
+          { x: 625, y: 350, speed: 60, platformIndex: 3 },
+          { x: 375, y: 300, speed: 50, platformIndex: 6 },
         ],
       },
       4: {
         platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 350, y: 480 },
-          { x: 150, y: 400 },
-          { x: 500, y: 350 },
-          { x: 250, y: 280 },
-          { x: 600, y: 220 },
-          { x: 350, y: 160 },
-          { x: 700, y: 120 },
-          { x: 450, y: 400 },
-          { x: 550, y: 480 },
+          { x: 100, y: 600 },
+          { x: 300, y: 550 },
+          { x: 500, y: 500 },
+          { x: 700, y: 450 },
+          { x: 900, y: 400 },
+          { x: 200, y: 400 },
+          { x: 400, y: 350 },
+          { x: 600, y: 300 },
+          { x: 800, y: 250 },
+          { x: 350, y: 200 },
         ],
         stars: [
-          { x: 100, y: 500 },
-          { x: 350, y: 430 },
-          { x: 150, y: 350 },
-          { x: 500, y: 300 },
-          { x: 250, y: 230 },
-          { x: 600, y: 170 },
-          { x: 350, y: 110 },
-          { x: 700, y: 70 },
-          { x: 450, y: 350 },
-          { x: 550, y: 430 },
+          { x: 100, y: 550 },
+          { x: 300, y: 500 },
+          { x: 500, y: 450 },
+          { x: 700, y: 400 },
+          { x: 900, y: 350 },
+          { x: 200, y: 350 },
+          { x: 400, y: 300 },
+          { x: 600, y: 250 },
+          { x: 800, y: 200 },
+          { x: 350, y: 150 },
+        ],
+        enemies: [
+          { x: 175, y: 550, speed: 50, platformIndex: 1 },
+          { x: 375, y: 500, speed: 60, platformIndex: 2 },
+          { x: 575, y: 450, speed: 65, platformIndex: 3 },
+          { x: 275, y: 350, speed: 55, platformIndex: 5 },
+          { x: 475, y: 300, speed: 70, platformIndex: 6 },
         ],
       },
       5: {
         platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 350, y: 450 },
-          { x: 500, y: 350 },
-          { x: 650, y: 250 },
-          { x: 300, y: 500 },
-          { x: 450, y: 480 },
-          { x: 600, y: 460 },
-          { x: 400, y: 380 },
-          { x: 550, y: 320 },
-          { x: 750, y: 180 },
-        ],
-        stars: [
-          { x: 100, y: 500 },
-          { x: 350, y: 400 },
-          { x: 500, y: 300 },
-          { x: 650, y: 200 },
-          { x: 300, y: 450 },
-          { x: 450, y: 430 },
-          { x: 600, y: 410 },
-          { x: 400, y: 330 },
-          { x: 550, y: 270 },
-          { x: 750, y: 130 },
-        ],
-      },
-      6: {
-        platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 300, y: 568 },
-          { x: 150, y: 480 },
-          { x: 250, y: 480 },
-          { x: 200, y: 400 },
-          { x: 120, y: 320 },
-          { x: 280, y: 320 },
-          { x: 200, y: 240 },
-          { x: 150, y: 160 },
-          { x: 250, y: 160 },
-          { x: 200, y: 80 },
-          { x: 400, y: 450 },
-          { x: 500, y: 350 },
-          { x: 600, y: 250 },
-          { x: 700, y: 150 },
-        ],
-        stars: [
-          { x: 100, y: 500 },
-          { x: 300, y: 500 },
-          { x: 150, y: 430 },
-          { x: 250, y: 430 },
-          { x: 200, y: 350 },
-          { x: 120, y: 270 },
-          { x: 280, y: 270 },
-          { x: 200, y: 190 },
-          { x: 200, y: 30 },
-          { x: 400, y: 400 },
-          { x: 500, y: 300 },
-          { x: 600, y: 200 },
-          { x: 750, y: 100 },
-        ],
-      },
-      7: {
-        platforms: [
-          { x: 75, y: 568 },
-          { x: 175, y: 568 },
-          { x: 300, y: 480 },
-          { x: 380, y: 420 },
-          { x: 460, y: 360 },
-          { x: 540, y: 300 },
-          { x: 620, y: 240 },
-          { x: 700, y: 180 },
-          { x: 250, y: 400 },
-          { x: 350, y: 320 },
-          { x: 450, y: 240 },
-          { x: 550, y: 160 },
-          { x: 650, y: 100 },
-          { x: 750, y: 80 },
-        ],
-        stars: [
-          { x: 75, y: 500 },
-          { x: 175, y: 500 },
-          { x: 300, y: 430 },
-          { x: 380, y: 370 },
-          { x: 460, y: 310 },
-          { x: 540, y: 250 },
-          { x: 620, y: 190 },
-          { x: 700, y: 130 },
-          { x: 250, y: 350 },
-          { x: 350, y: 270 },
-          { x: 450, y: 190 },
-          { x: 550, y: 110 },
-          { x: 650, y: 50 },
-          { x: 750, y: 30 },
-        ],
-      },
-      8: {
-        platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 700, y: 568 },
-          { x: 350, y: 500 },
-          { x: 450, y: 500 },
-          { x: 550, y: 500 },
-          { x: 150, y: 420 },
-          { x: 300, y: 380 },
-          { x: 500, y: 380 },
-          { x: 650, y: 420 },
-          { x: 200, y: 300 },
-          { x: 400, y: 260 },
-          { x: 600, y: 300 },
-          { x: 300, y: 180 },
-          { x: 500, y: 140 },
-          { x: 400, y: 80 },
-        ],
-        stars: [
-          { x: 100, y: 500 },
-          { x: 200, y: 500 },
-          { x: 350, y: 450 },
-          { x: 450, y: 450 },
+          { x: 100, y: 600 },
+          { x: 250, y: 550 },
+          { x: 400, y: 500 },
           { x: 550, y: 450 },
-          { x: 700, y: 500 },
-          { x: 150, y: 370 },
-          { x: 300, y: 330 },
-          { x: 500, y: 330 },
-          { x: 650, y: 370 },
-          { x: 200, y: 250 },
-          { x: 400, y: 210 },
-          { x: 600, y: 250 },
-          { x: 300, y: 130 },
-          { x: 500, y: 90 },
-          { x: 400, y: 30 },
-        ],
-      },
-      9: {
-        platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 500 },
-          { x: 280, y: 450 },
-          { x: 360, y: 400 },
-          { x: 440, y: 350 },
-          { x: 520, y: 300 },
-          { x: 600, y: 250 },
-          { x: 680, y: 200 },
-          { x: 750, y: 150 },
-          { x: 150, y: 380 },
-          { x: 250, y: 320 },
-          { x: 350, y: 260 },
-          { x: 450, y: 200 },
-          { x: 550, y: 140 },
-          { x: 650, y: 100 },
-          { x: 700, y: 80 },
-          { x: 400, y: 120 },
-        ],
-        stars: [
-          { x: 100, y: 500 },
+          { x: 700, y: 400 },
+          { x: 850, y: 350 },
           { x: 200, y: 450 },
-          { x: 280, y: 400 },
-          { x: 360, y: 350 },
-          { x: 440, y: 300 },
-          { x: 520, y: 250 },
-          { x: 600, y: 200 },
-          { x: 680, y: 150 },
-          { x: 750, y: 100 },
-          { x: 150, y: 330 },
-          { x: 250, y: 270 },
-          { x: 350, y: 210 },
-          { x: 450, y: 150 },
-          { x: 550, y: 90 },
-          { x: 650, y: 50 },
-          { x: 700, y: 30 },
-          { x: 400, y: 70 },
-        ],
-      },
-      10: {
-        platforms: [
-          { x: 100, y: 568 },
-          { x: 200, y: 568 },
-          { x: 300, y: 500 },
-          { x: 150, y: 450 },
-          { x: 450, y: 420 },
-          { x: 100, y: 370 },
+          { x: 350, y: 400 },
           { x: 500, y: 350 },
-          { x: 200, y: 300 },
-          { x: 600, y: 280 },
-          { x: 250, y: 230 },
-          { x: 650, y: 210 },
-          { x: 350, y: 180 },
-          { x: 450, y: 150 },
-          { x: 550, y: 120 },
-          { x: 400, y: 80 },
-          { x: 500, y: 50 },
-          { x: 50, y: 320 },
-          { x: 750, y: 340 },
-          { x: 700, y: 160 },
-          { x: 300, y: 100 },
+          { x: 650, y: 300 },
+          { x: 800, y: 250 },
+          { x: 300, y: 300 },
+          { x: 450, y: 250 },
+          { x: 600, y: 200 },
+          { x: 750, y: 150 },
         ],
         stars: [
-          { x: 100, y: 500 },
-          { x: 200, y: 500 },
-          { x: 300, y: 450 },
-          { x: 150, y: 400 },
-          { x: 450, y: 370 },
-          { x: 100, y: 320 },
+          { x: 100, y: 550 },
+          { x: 250, y: 500 },
+          { x: 400, y: 450 },
+          { x: 550, y: 400 },
+          { x: 700, y: 350 },
+          { x: 850, y: 300 },
+          { x: 200, y: 400 },
+          { x: 350, y: 350 },
           { x: 500, y: 300 },
-          { x: 200, y: 250 },
-          { x: 600, y: 230 },
-          { x: 250, y: 180 },
-          { x: 650, y: 160 },
-          { x: 350, y: 130 },
-          { x: 450, y: 100 },
-          { x: 550, y: 70 },
-          { x: 400, y: 30 },
-          { x: 500, y: 20 },
-          { x: 50, y: 320 },
-          { x: 750, y: 340 },
-          { x: 700, y: 160 },
-          { x: 300, y: 100 },
+          { x: 650, y: 250 },
+          { x: 800, y: 200 },
+          { x: 300, y: 250 },
+          { x: 450, y: 200 },
+          { x: 600, y: 150 },
+          { x: 750, y: 100 },
+        ],
+        enemies: [
+          { x: 175, y: 550, speed: 55, platformIndex: 1 },
+          { x: 325, y: 500, speed: 60, platformIndex: 2 },
+          { x: 475, y: 450, speed: 65, platformIndex: 3 },
+          { x: 625, y: 400, speed: 70, platformIndex: 4 },
+          { x: 275, y: 400, speed: 60, platformIndex: 6 },
+          { x: 425, y: 350, speed: 65, platformIndex: 8 },
+          { x: 575, y: 300, speed: 70, platformIndex: 9 },
+          { x: 375, y: 250, speed: 75, platformIndex: 11 },
         ],
       },
     }
 
-    const layout = levelLayouts[this.currentLevel] || levelLayouts[1]
+    const currentLevel = levels[gameState.level]
+
+    if (!currentLevel) {
+      console.error("Level not found:", gameState.level)
+      return
+    }
 
     // Create platforms
-    layout.platforms.forEach((platform) => {
-      const platformSprite = this.platforms.create(platform.x, platform.y, "ground")
-      platformSprite.setScale(1).refreshBody()
-      platformSprite.body.setSize(platformSprite.width, platformSprite.height * 0.7, true)
-      platformSprite.body.setOffset(0, platformSprite.height * 0.3)
-    })
+    currentLevel.platforms.forEach((platform, index) => {
+      const p = this.platforms.create(platform.x, platform.y, "platform")
+      p.setScale(1)
+      p.refreshBody()
+      p.platformIndex = index
 
-    // Create stars
-    layout.stars.forEach((star) => {
-      const starSprite = this.stars.create(star.x, star.y, "stars")
-      starSprite.setBounceY(Phaser.Math.FloatBetween(0.4, 0.8))
-      starSprite.setScale(0.1)
-    })
-  },
-
-  createCheckpoint: function () {
-    const checkpoint = this.checkpoints[this.currentLevel]
-    console.log(`Creating checkpoint for level ${this.currentLevel} at:`, checkpoint)
-
-    // PERBAIKAN: Buat checkpoint dengan error handling
-    try {
-      this.checkpointSprite = this.physics.add.sprite(checkpoint.x, checkpoint.y - 25, "checkpoint")
-      this.checkpointSprite.setScale(0.8)
-      this.checkpointSprite.body.allowGravity = false
-      this.checkpointSprite.setTint(0xff0000)
-      this.checkpointSprite.body.setImmovable(true)
-
-      console.log("Checkpoint sprite created successfully")
-
-      // TAMBAHAN: Efek pulsing
+      // Add platform glow
+      const glow = this.add.ellipse(platform.x, platform.y + 22, 90, 10, 0x00ffff, 0.3)
       this.tweens.add({
-        targets: this.checkpointSprite,
-        scaleX: 0.9,
-        scaleY: 0.9,
-        duration: 800,
+        targets: glow,
+        alpha: 0.6,
+        duration: 2000,
         yoyo: true,
         repeat: -1,
         ease: "Sine.easeInOut",
       })
 
-      // TAMBAHAN: Indikator checkpoint
-      this.checkpointIndicator = this.add.text(checkpoint.x, checkpoint.y - 60, "⬇️ CHECKPOINT", {
-        fontSize: "14px",
-        fill: "#ff0000",
-        backgroundColor: "#ffffff80",
-        padding: { x: 5, y: 2 },
-      })
-      this.checkpointIndicator.setOrigin(0.5)
-      this.checkpointIndicator.setDepth(5)
-    } catch (error) {
-      console.error("Error creating checkpoint:", error)
-      // Fallback: buat checkpoint sederhana
-      this.checkpointSprite = this.add.rectangle(checkpoint.x, checkpoint.y - 25, 32, 48, 0xff0000)
-      this.physics.add.existing(this.checkpointSprite, true) // true = static body
-    }
-  },
-
-  setupCollisions: function () {
-    // Clear existing collisions
-    if (this.playerPlatformCollider) this.playerPlatformCollider.destroy()
-    if (this.starPlatformCollider) this.starPlatformCollider.destroy()
-    if (this.starCollectOverlap) this.starCollectOverlap.destroy()
-    if (this.checkpointOverlap) this.checkpointOverlap.destroy()
-
-    // Create new collisions
-    this.playerPlatformCollider = this.physics.add.collider(this.player, this.platforms)
-    this.starPlatformCollider = this.physics.add.collider(this.stars, this.platforms)
-    this.starCollectOverlap = this.physics.add.overlap(this.player, this.stars, this.collectStar, null, this)
-
-    // PERBAIKAN: Checkpoint collision dengan error handling
-    if (this.checkpointSprite && this.checkpointSprite.body) {
-      this.checkpointOverlap = this.physics.add.overlap(
-        this.player,
-        this.checkpointSprite,
-        this.reachCheckpoint,
-        null,
-        this,
-      )
-      console.log("Checkpoint collision setup complete")
-    } else {
-      console.warn("Checkpoint sprite or body not found for collision setup")
-    }
-  },
-
-  reachCheckpoint: function (player, checkpoint) {
-    console.log("Checkpoint collision detected!")
-
-    if (!this.checkpointReached) {
-      this.checkpointReached = true
-      checkpoint.setTint(0x00ff00)
-      this.snd_touch.play()
-
-      // Update UI
-      this.checkpointText.setText("Checkpoint: Reached!")
-      this.checkpointText.setFill("#00ff00")
-
-      // Update checkpoint indicator
-      if (this.checkpointIndicator) {
-        this.checkpointIndicator.setText("✅ REACHED!")
-        this.checkpointIndicator.setFill("#00ff00")
-      }
-
-      // Visual feedback
-      const checkpointFeedback = this.add.text(checkpoint.x, checkpoint.y - 50, "Checkpoint!", {
-        fontSize: "16px",
-        fill: "#00FF00",
-        backgroundColor: "#00000080",
-        padding: { x: 8, y: 4 },
-      })
-      checkpointFeedback.setOrigin(0.5)
-      checkpointFeedback.setDepth(10)
-
-      // Animate feedback
+      // Add floating animation
       this.tweens.add({
-        targets: checkpointFeedback,
-        y: checkpointFeedback.y - 30,
-        alpha: 0,
+        targets: p,
+        y: p.y - 3,
+        duration: Phaser.Math.Between(3000, 4000),
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      })
+    })
+
+    // Create stars
+    gameState.totalStars = currentLevel.stars.length
+    gameState.starsCollected = 0
+
+    currentLevel.stars.forEach((star) => {
+      const s = this.stars.create(star.x, star.y, "star")
+      s.setBounce(0.2)
+      s.setCollideWorldBounds(true)
+
+      // Add star floating animation
+      this.tweens.add({
+        targets: s,
+        y: s.y - 8,
+        rotation: 0.5,
+        duration: Phaser.Math.Between(2000, 3000),
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      })
+
+      // Add star glow
+      const glow = this.add.ellipse(star.x, star.y + 5, 30, 10, 0xffd700, 0.3)
+      this.tweens.add({
+        targets: glow,
+        alpha: 0.6,
+        scaleX: 1.2,
+        scaleY: 1.2,
         duration: 1500,
-        onComplete: () => {
-          checkpointFeedback.destroy()
-        },
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
       })
-
-      // Check level completion
-      this.checkLevelCompletion()
-    }
-  },
-
-  collectStar: function (player, star) {
-    star.disableBody(true, true)
-    this.starsCollected++
-    this.snd_coin.play()
-
-    // Update UI
-    this.starsText.setText("Stars: " + this.starsCollected + "/" + this.totalStars)
-
-    // Check level completion
-    this.checkLevelCompletion()
-  },
-
-  checkLevelCompletion: function () {
-    if (this.starsCollected >= this.totalStars && this.checkpointReached) {
-      this.time.delayedCall(500, () => {
-        if (this.currentLevel < 10) {
-          this.nextLevel()
-        } else {
-          this.gameFinished = true
-          this.showGameComplete()
-        }
-      })
-    }
-  },
-
-  nextLevel: function () {
-    this.currentLevel++
-    this.snd_leveling.play()
-    this.gameStarted = false
-    this.physics.pause()
-
-    const levelTransition = this.add.text(this.gameWidth / 2, this.gameHeight / 2, "Level " + this.currentLevel, {
-      fontSize: "48px",
-      fill: "#FFD700",
     })
-    levelTransition.setOrigin(0.5)
-    levelTransition.setDepth(20)
 
-    this.tweens.add({
-      targets: levelTransition,
-      duration: 1500,
-      alpha: 0,
-      onComplete: () => {
-        levelTransition.destroy()
-        this.createLevel()
-        this.gameStarted = true
-        this.physics.resume()
-      },
-    })
-  },
+    // Create enemies with improved AI
+    currentLevel.enemies.forEach((enemy) => {
+      const e = this.enemies.create(enemy.x, enemy.y, "enemy")
+      e.setBounce(0.1)
+      e.setCollideWorldBounds(true)
+      e.setVelocityX(enemy.speed)
+      e.speed = enemy.speed
+      e.originalSpeed = enemy.speed
+      e.platformIndex = enemy.platformIndex
+      e.direction = 1
+      e.originalTint = 0xffffff
+      e.setTint(e.originalTint)
 
-  showGameComplete: function () {
-    this.physics.pause()
-    this.music_play.stop()
+      // Store platform reference for better AI
+      e.assignedPlatform = currentLevel.platforms[enemy.platformIndex]
 
-    const completeText = this.add.text(
-      this.gameWidth / 2,
-      this.gameHeight / 2,
-      "🎉 GAME COMPLETE! 🎉\nYou finished all 10 levels!\nPress SPACE to restart",
-      {
-        fontSize: "36px",
-        fill: "#00FF00",
-        align: "center",
-      },
-    )
-    completeText.setOrigin(0.5)
-    completeText.setDepth(20)
-
-    // Celebration effect
-    for (let i = 0; i < 20; i++) {
-      this.time.delayedCall(i * 100, () => {
-        const firework = this.add.circle(
-          Phaser.Math.Between(100, 700),
-          Phaser.Math.Between(100, 400),
-          Phaser.Math.Between(5, 15),
-          Phaser.Math.Between(0x000000, 0xffffff),
-        )
-        firework.setDepth(15)
-
-        this.time.delayedCall(2000, () => {
-          firework.destroy()
-        })
+      // Add enemy tint animation
+      this.tweens.add({
+        targets: e,
+        tint: 0xff6666,
+        duration: 800,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
       })
-    }
-  },
+    })
+  }
 
-  gameOver: function () {
-    this.physics.pause()
-    this.gameStarted = false
-    this.snd_lose.play()
-    this.music_play.stop()
+  createPlayer() {
+    // Create player
+    this.player = this.physics.add.sprite(100, 550, "player")
+    this.player.setBounce(0.1)
+    this.player.setCollideWorldBounds(true)
+    this.player.canJump = true
+    this.player.isAlive = true
+    this.player.invulnerable = false
 
-    this.player.setTint(0xff0000)
+    // Add player glow
+    this.playerGlow = this.add.ellipse(this.player.x, this.player.y + 25, 30, 10, 0x00ffff, 0.3)
+  }
 
-    const gameOverImage = this.add.image(this.gameWidth / 2, this.gameHeight / 2, "gameover")
-    gameOverImage.setScale(0.5)
-    gameOverImage.setDepth(20)
-
-    const restartText = this.add.text(this.gameWidth / 2, this.gameHeight / 2 + 100, "Press SPACE to restart level", {
+  createUI() {
+    // Score text
+    this.scoreText = this.add.text(16, 16, "Score: 0", {
       fontSize: "24px",
-      fill: "#fff",
+      fontFamily: "Arial",
+      fill: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
     })
-    restartText.setOrigin(0.5)
-    restartText.setDepth(20)
-  },
 
-  restartLevel: function () {
-    this.player.clearTint()
-    this.createLevel()
-    this.gameStarted = true
-    this.physics.resume()
-    this.music_play.play()
-
-    this.children.list.forEach((child) => {
-      if (child.depth === 20) {
-        child.destroy()
-      }
+    // Level text
+    this.levelText = this.add.text(16, 50, "Level: " + gameState.level, {
+      fontSize: "24px",
+      fontFamily: "Arial",
+      fill: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
     })
-  },
 
-  restartGame: function () {
-    this.currentLevel = 1
-    this.gameFinished = false
-    this.restartLevel()
-  },
+    // Stars counter
+    this.starsText = this.add.text(16, 84, "Stars: 0/" + gameState.totalStars, {
+      fontSize: "24px",
+      fontFamily: "Arial",
+      fill: "#FFD700",
+      stroke: "#000000",
+      strokeThickness: 4,
+    })
 
-  update: function () {
-    if (!this.gameStarted || this.gameFinished) {
-      if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
-        if (this.gameFinished) {
-          this.restartGame()
-        } else {
-          this.restartLevel()
-        }
-      }
-      return
+    // Lives display
+    this.livesGroup = this.add.group()
+    this.updateLives()
+  }
+
+  updateLives() {
+    this.livesGroup.clear(true, true)
+
+    for (let i = 0; i < gameState.lives; i++) {
+      const heart = this.livesGroup.create(900 - i * 30, 30, "heart")
+      heart.setScale(1)
+
+      // Add heart beat animation
+      this.tweens.add({
+        targets: heart,
+        scaleX: 1.1,
+        scaleY: 1.1,
+        duration: 800,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+        delay: i * 300,
+      })
     }
+  }
+
+  setupCollisions() {
+    // Collisions
+    this.physics.add.collider(this.player, this.platforms)
+    this.physics.add.collider(this.stars, this.platforms)
+    this.physics.add.collider(this.enemies, this.platforms)
+
+    // Star collection
+    this.physics.add.overlap(this.player, this.stars, this.collectStar, null, this)
+
+    // Enemy collision
+    this.physics.add.overlap(this.player, this.enemies, this.hitEnemy, null, this)
+  }
+
+  showLevelIntro() {
+    // Level intro text
+    const levelIntro = this.add.text(500, 300, "Level " + gameState.level, {
+      fontSize: "64px",
+      fontFamily: "Arial Black",
+      fill: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 8,
+      shadow: {
+        offsetX: 2,
+        offsetY: 2,
+        color: "#000000",
+        blur: 5,
+        fill: true,
+      },
+    })
+    levelIntro.setOrigin(0.5)
+    levelIntro.setAlpha(0)
+
+    // Intro animation
+    this.tweens.add({
+      targets: levelIntro,
+      alpha: 1,
+      scaleX: 1.2,
+      scaleY: 1.2,
+      duration: 1000,
+      ease: "Power2",
+      yoyo: true,
+      onComplete: () => {
+        levelIntro.destroy()
+      },
+    })
+  }
+
+  collectStar(player, star) {
+    // Play collect sound
+    this.audioManager.playSound("collect")
+
+    // Add particle effect
+    this.addStarParticles(star.x, star.y)
+
+    // Remove star
+    star.disableBody(true, true)
+
+    // Update score
+    gameState.score += 10
+    this.scoreText.setText("Score: " + gameState.score)
+
+    // Update stars counter
+    gameState.starsCollected++
+    this.starsText.setText("Stars: " + gameState.starsCollected + "/" + gameState.totalStars)
+
+    // Check if all stars are collected
+    if (gameState.starsCollected === gameState.totalStars) {
+      this.levelComplete()
+    }
+  }
+
+  addStarParticles(x, y) {
+    // Create particle emitter
+    const particles = this.add.particles(x, y, "star", {
+      scale: { start: 0.3, end: 0 },
+      speed: { min: 50, max: 120 },
+      angle: { min: 0, max: 360 },
+      gravityY: 100,
+      lifespan: 1200,
+      quantity: 15,
+      blendMode: "ADD",
+    })
+
+    // Auto destroy after animation
+    this.time.delayedCall(1200, () => {
+      particles.destroy()
+    })
+  }
+
+  hitEnemy(player, enemy) {
+    if (player.invulnerable || !player.isAlive) return
+
+    this.playerDeath()
+  }
+
+  playerDeath() {
+    if (!this.player.isAlive) return
+
+    this.player.isAlive = false
+    this.player.invulnerable = true
+
+    // Stop walking sound
+    this.audioManager.stopSound("walking")
+
+    // Play death sound
+    this.audioManager.playSound("gameOver")
+
+    // Add death particles
+    this.addDeathParticles(this.player.x, this.player.y)
+
+    // Shake camera
+    this.cameras.main.shake(500, 0.02)
+
+    // Decrease lives
+    gameState.lives--
+    this.updateLives()
+
+    // Player death animation
+    this.player.setTint(0xff0000)
+    this.tweens.add({
+      targets: this.player,
+      alpha: 0.5,
+      scaleX: 1.5,
+      scaleY: 0.5,
+      rotation: Math.PI,
+      duration: 1000,
+      onComplete: () => {
+        this.handlePlayerDeath()
+      },
+    })
+  }
+
+  addDeathParticles(x, y) {
+    // Create particle emitter
+    const particles = this.add.particles(x, y, "player", {
+      scale: { start: 0.4, end: 0 },
+      speed: { min: 100, max: 200 },
+      angle: { min: 0, max: 360 },
+      gravityY: 300,
+      lifespan: 1000,
+      quantity: 20,
+      tint: 0xff0000,
+    })
+
+    // Auto destroy after animation
+    this.time.delayedCall(1000, () => {
+      particles.destroy()
+    })
+  }
+
+  handlePlayerDeath() {
+    if (gameState.lives <= 0) {
+      // Game Over
+      this.time.delayedCall(1000, () => {
+        this.scene.start("GameOverScene")
+      })
+    } else {
+      // Respawn player
+      this.time.delayedCall(1000, () => {
+        this.respawnPlayer()
+      })
+    }
+  }
+
+  respawnPlayer() {
+    this.player.setPosition(100, 550)
+    this.player.setAlpha(1)
+    this.player.setScale(1)
+    this.player.setRotation(0)
+    this.player.clearTint()
+    this.player.isAlive = true
+    this.player.setVelocity(0, 0)
+
+    // Invulnerability period
+    this.player.invulnerable = true
+
+    // Flashing effect during invulnerability
+    this.tweens.add({
+      targets: this.player,
+      alpha: 0.5,
+      duration: 200,
+      yoyo: true,
+      repeat: 10,
+      onComplete: () => {
+        this.player.invulnerable = false
+        this.player.setAlpha(1)
+      },
+    })
+  }
+
+  levelComplete() {
+    // Play level change sound
+    this.audioManager.playSound("levelChange")
+
+    // Add victory particles
+    this.addVictoryParticles()
+
+    // Show level complete text
+    const levelComplete = this.add.text(500, 300, "Level Complete!", {
+      fontSize: "64px",
+      fontFamily: "Arial Black",
+      fill: "#FFD700",
+      stroke: "#000000",
+      strokeThickness: 8,
+      shadow: {
+        offsetX: 2,
+        offsetY: 2,
+        color: "#000000",
+        blur: 5,
+        fill: true,
+      },
+    })
+    levelComplete.setOrigin(0.5)
+    levelComplete.setAlpha(0)
+
+    // Level complete animation
+    this.tweens.add({
+      targets: levelComplete,
+      alpha: 1,
+      scaleX: 1.2,
+      scaleY: 1.2,
+      duration: 1000,
+      ease: "Power2",
+      yoyo: true,
+      onComplete: () => {
+        levelComplete.destroy()
+
+        // Go to next level or game complete
+        if (gameState.level < gameState.maxLevel) {
+          gameState.level++
+          this.scene.restart()
+        } else {
+          this.gameComplete()
+        }
+      },
+    })
+  }
+
+  addVictoryParticles() {
+    // Create multiple firework emitters
+    for (let i = 0; i < 8; i++) {
+      const x = Phaser.Math.Between(100, 900)
+      const y = Phaser.Math.Between(100, 500)
+      const color = Phaser.Display.Color.HSVToRGB(Math.random(), 1, 1).color
+
+      // Create particle emitter
+      const particles = this.add.particles(x, y, "star", {
+        scale: { start: 0.5, end: 0 },
+        speed: { min: 100, max: 250 },
+        angle: { min: 0, max: 360 },
+        gravityY: 50,
+        lifespan: 2500,
+        quantity: 40,
+        tint: color,
+        blendMode: "ADD",
+      })
+
+      // Auto destroy after animation
+      this.time.delayedCall(2500, () => {
+        particles.destroy()
+      })
+    }
+  }
+
+  gameComplete() {
+    // Show game complete text
+    const gameComplete = this.add.text(500, 300, "Game Complete!", {
+      fontSize: "64px",
+      fontFamily: "Arial Black",
+      fill: "#FFD700",
+      stroke: "#000000",
+      strokeThickness: 8,
+      shadow: {
+        offsetX: 2,
+        offsetY: 2,
+        color: "#000000",
+        blur: 5,
+        fill: true,
+      },
+    })
+    gameComplete.setOrigin(0.5)
+    gameComplete.setAlpha(0)
+
+    // Final score
+    const finalScore = this.add.text(500, 380, "Final Score: " + gameState.score, {
+      fontSize: "32px",
+      fontFamily: "Arial",
+      fill: "#FFFFFF",
+      stroke: "#000000",
+      strokeThickness: 4,
+    })
+    finalScore.setOrigin(0.5)
+    finalScore.setAlpha(0)
+
+    // Game complete animation
+    this.tweens.add({
+      targets: [gameComplete, finalScore],
+      alpha: 1,
+      scaleX: 1.2,
+      scaleY: 1.2,
+      duration: 1000,
+      ease: "Power2",
+      onComplete: () => {
+        // Add restart button
+        const restartButton = this.add.rectangle(500, 480, 200, 60, 0x32cd32)
+        restartButton.setStrokeStyle(4, 0xffffff)
+        restartButton.setInteractive({ useHandCursor: true })
+
+        const restartText = this.add.text(500, 480, "PLAY AGAIN", {
+          fontSize: "24px",
+          fontFamily: "Arial Black",
+          fill: "#FFFFFF",
+        })
+        restartText.setOrigin(0.5)
+
+        // Button animations
+        restartButton.on("pointerover", () => {
+          restartButton.setFillStyle(0x228b22)
+          restartButton.setScale(1.1)
+          this.audioManager.playSound("touch")
+        })
+
+        restartButton.on("pointerout", () => {
+          restartButton.setFillStyle(0x32cd32)
+          restartButton.setScale(1)
+        })
+
+        restartButton.on("pointerdown", () => {
+          this.audioManager.playSound("touch")
+          gameState.level = 1
+          gameState.lives = 3
+          gameState.score = 0
+          this.scene.restart()
+        })
+      },
+    })
+  }
+
+  update() {
+    if (!this.player.isAlive) return
+
+    let isMoving = false
 
     // Player movement
     if (this.cursors.left.isDown) {
-      this.player.setVelocityX(-220)
-      this.player.anims.play("left", true)
-      this.snd_walk.setVolume(0.5)
+      this.player.setVelocityX(-160)
+      this.player.flipX = true
+      isMoving = true
     } else if (this.cursors.right.isDown) {
-      this.player.setVelocityX(220)
-      this.player.anims.play("right", true)
-      this.snd_walk.setVolume(0.5)
+      this.player.setVelocityX(160)
+      this.player.flipX = false
+      isMoving = true
     } else {
       this.player.setVelocityX(0)
-      this.player.anims.play("front")
-      this.snd_walk.setVolume(0)
     }
 
-    // Coyote time for better jumping
+    // Walking sound
+    if (isMoving && this.player.body.touching.down) {
+      this.audioManager.playSound("walking")
+    } else {
+      this.audioManager.stopSound("walking")
+    }
+
+    // Player jump
+    if (this.cursors.up.isDown && this.player.body.touching.down && this.player.canJump) {
+      this.player.setVelocityY(-400)
+      this.player.canJump = false
+      this.audioManager.playSound("jump")
+
+      // Add jump particles
+      this.addJumpParticles(this.player.x, this.player.y + 25)
+    }
+
+    // Reset jump ability when touching ground
     if (this.player.body.touching.down) {
-      this.jumpCoyoteTime = this.jumpCoyoteTimeMax
-    } else if (this.jumpCoyoteTime > 0) {
-      this.jumpCoyoteTime--
+      this.player.canJump = true
     }
 
-    // Jumping with coyote time
-    if (this.cursors.up.isDown && this.jumpCoyoteTime > 0) {
-      this.player.setVelocityY(-680)
-      this.jumpCoyoteTime = 0
-      this.snd_jump.play()
+    // Update player glow position
+    if (this.playerGlow) {
+      this.playerGlow.x = this.player.x
+      this.playerGlow.y = this.player.y + 25
     }
 
-    // Check for void death
-    if (this.player.y > this.gameHeight) {
-      this.gameOver()
+    // Check if player fell off the world (death zone) - Fixed condition
+    if (this.player.y > this.deathZone && this.player.isAlive) {
+      this.playerDeath()
     }
-  },
+
+    // Enhanced Enemy AI - Fixed movement
+    this.enemies.getChildren().forEach((enemy) => {
+      if (!enemy.assignedPlatform) return
+
+      const platform = enemy.assignedPlatform
+      const platformLeft = platform.x - 45 // Platform width consideration
+      const platformRight = platform.x + 45
+
+      // Check if enemy is on its assigned platform
+      const onPlatform = enemy.y >= platform.y - 50 && enemy.y <= platform.y + 10
+
+      if (onPlatform) {
+        // Platform edge detection - improved logic
+        if (enemy.x <= platformLeft + 10) {
+          enemy.direction = 1
+          enemy.setVelocityX(enemy.speed)
+        } else if (enemy.x >= platformRight - 10) {
+          enemy.direction = -1
+          enemy.setVelocityX(-enemy.speed)
+        }
+
+        // Continue moving in current direction
+        if (enemy.direction === 1) {
+          enemy.setVelocityX(enemy.speed)
+        } else {
+          enemy.setVelocityX(-enemy.speed)
+        }
+      }
+
+      // Reverse direction when hitting world bounds
+      if (enemy.body.blocked.right || enemy.body.blocked.left) {
+        enemy.direction *= -1
+        enemy.setVelocityX(enemy.speed * enemy.direction)
+      }
+    })
+  }
+
+  addJumpParticles(x, y) {
+    // Create particle emitter
+    const particles = this.add.particles(x, y, "player", {
+      scale: { start: 0.2, end: 0 },
+      speed: { min: 20, max: 60 },
+      angle: { min: 230, max: 310 },
+      gravityY: 300,
+      lifespan: 600,
+      quantity: 12,
+      alpha: { start: 0.6, end: 0 },
+    })
+
+    // Auto destroy after animation
+    this.time.delayedCall(600, () => {
+      particles.destroy()
+    })
+  }
+}
+
+// Game Over Scene
+class GameOverScene extends Phaser.Scene {
+  constructor() {
+    super({ key: "GameOverScene" })
+  }
+
+  create() {
+    this.audioManager = new AudioManager(this)
+    this.audioManager.createSounds()
+
+    // Background
+    this.add.rectangle(500, 350, 1000, 700, 0x000000, 0.8)
+
+    // Game Over text
+    const gameOverText = this.add.text(500, 200, "GAME OVER", {
+      fontSize: "64px",
+      fontFamily: "Arial Black",
+      fill: "#FF0000",
+      stroke: "#FFFFFF",
+      strokeThickness: 4,
+    })
+    gameOverText.setOrigin(0.5)
+
+    // Final score
+    const scoreText = this.add.text(500, 300, `Final Score: ${gameState.score}`, {
+      fontSize: "32px",
+      fontFamily: "Arial",
+      fill: "#FFFFFF",
+    })
+    scoreText.setOrigin(0.5)
+
+    // Level reached
+    const levelText = this.add.text(500, 350, `Level Reached: ${gameState.level}`, {
+      fontSize: "24px",
+      fontFamily: "Arial",
+      fill: "#FFFFFF",
+    })
+    levelText.setOrigin(0.5)
+
+    // Restart button
+    const restartButton = this.add.rectangle(400, 450, 180, 60, 0x32cd32)
+    restartButton.setStrokeStyle(4, 0xffffff)
+    restartButton.setInteractive({ useHandCursor: true })
+
+    const restartText = this.add.text(400, 450, "PLAY AGAIN", {
+      fontSize: "20px",
+      fontFamily: "Arial Bold",
+      fill: "#FFFFFF",
+    })
+    restartText.setOrigin(0.5)
+
+    // Menu button
+    const menuButton = this.add.rectangle(600, 450, 180, 60, 0xff6347)
+    menuButton.setStrokeStyle(4, 0xffffff)
+    menuButton.setInteractive({ useHandCursor: true })
+
+    const menuText = this.add.text(600, 450, "MAIN MENU", {
+      fontSize: "20px",
+      fontFamily: "Arial Bold",
+      fill: "#FFFFFF",
+    })
+    menuText.setOrigin(0.5)
+
+    // Button interactions
+    restartButton.on("pointerover", () => {
+      restartButton.setFillStyle(0x228b22)
+      restartButton.setScale(1.1)
+      this.audioManager.playSound("touch")
+    })
+
+    restartButton.on("pointerout", () => {
+      restartButton.setFillStyle(0x32cd32)
+      restartButton.setScale(1)
+    })
+
+    restartButton.on("pointerdown", () => {
+      this.audioManager.playSound("touch")
+      gameState.level = 1
+      this.scene.start("GameScene")
+    })
+
+    menuButton.on("pointerover", () => {
+      menuButton.setFillStyle(0xcd5c5c)
+      menuButton.setScale(1.1)
+      this.audioManager.playSound("touch")
+    })
+
+    menuButton.on("pointerout", () => {
+      menuButton.setFillStyle(0xff6347)
+      menuButton.setScale(1)
+    })
+
+    menuButton.on("pointerdown", () => {
+      this.audioManager.playSound("touch")
+      gameState.level = 1
+      this.scene.start("MenuScene")
+    })
+  }
+}
+
+// Audio Controls
+document.addEventListener("DOMContentLoaded", () => {
+  const muteBtn = document.getElementById("muteBtn")
+  const volumeDownBtn = document.getElementById("volumeDown")
+  const volumeUpBtn = document.getElementById("volumeUp")
+
+  if (muteBtn) {
+    muteBtn.addEventListener("click", () => {
+      gameState.audioEnabled = !gameState.audioEnabled
+      muteBtn.textContent = gameState.audioEnabled ? "🔊 Mute" : "🔇 Unmute"
+    })
+  }
+
+  if (volumeDownBtn) {
+    volumeDownBtn.addEventListener("click", () => {
+      gameState.volume = Math.max(0, gameState.volume - 0.1)
+    })
+  }
+
+  if (volumeUpBtn) {
+    volumeUpBtn.addEventListener("click", () => {
+      gameState.volume = Math.min(1, gameState.volume + 0.1)
+    })
+  }
 })
 
-// Game configuration
+// Game Configuration
 const config = {
   type: Phaser.AUTO,
-  width: 800,
-  height: 600,
+  width: 1000,
+  height: 700,
   parent: "game-container",
   physics: {
     default: "arcade",
     arcade: {
-      gravity: { y: 800 },
-      debug: false, // Set ke true untuk debug collision boxes
+      gravity: { y: 300 },
+      debug: false,
     },
   },
-  scene: scenePlay,
+  scene: [MenuScene, GameScene, GameOverScene],
 }
 
-// Start the game
+// Create game
 const game = new Phaser.Game(config)
